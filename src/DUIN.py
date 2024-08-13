@@ -21,6 +21,8 @@ from common.mhsa import *
 from common.ssloss import *
 from common.Dice import *
 from common.utils import *
+from tensorflow.contrib import layers
+import tensorflow as tf
 
 class DUIN(Model):
     def __init__(self, n_uid, n_mid, n_cat, EMBEDDING_DIM, HIDDEN_SIZE, ATTENTION_SIZE,
@@ -84,12 +86,12 @@ class DUIN(Model):
             sequence_mask = tf.tile(sequence_mask, [1, maxlen])
             
             mid_target_graph_tag = tf.concat([self.mid_target_i2i_tag, self.mid_target_i2c_tag, self.mid_target_c2c_tag], axis=2) 
-            mid_target_graph_gate = RelevantGate(mid_target_graph_tag, clicks_trans_output.get_shape().as_list()[1], tag='target_mid_graph_tag')
+            mid_target_graph_gate = self.RelevantGate(mid_target_graph_tag, clicks_trans_output.get_shape().as_list()[1], tag='target_mid_graph_tag')
             
             mid_target_seq = mid_target_graph_gate * clicks_trans_output
             
             mid_trigger_graph_tag = tf.concat([self.mid_trigger_i2i_tag, self.mid_trigger_i2c_tag, self.mid_trigger_c2c_tag], axis=2) 
-            mid_trigger_graph_gate = RelevantGate(mid_trigger_graph_tag, clicks_trans_output.get_shape().as_list()[1], tag='trigger_mid_graph_tag')
+            mid_trigger_graph_gate = self.RelevantGate(mid_trigger_graph_tag, clicks_trans_output.get_shape().as_list()[1], tag='trigger_mid_graph_tag')
             
             mid_trigger_seq = mid_trigger_graph_gate * clicks_trans_output
             
@@ -159,23 +161,7 @@ class DUIN(Model):
         with tf.name_scope('IUMM_Layer'):
             
             intention_feature = tf.concat([self.uid_batch_embedded, self.item_his_hard_eb_sum, intent_vec, self.seq_hard_len_eb, self.pagenum_eb], 1)
-            
-            mu = tf.layers.batch_normalization(inputs=intention_feature, name='mu_bn1', training=self.is_training)
-            mu = tf.layers.dense(mu, EMBEDDING_DIM*2, activation=tf.nn.relu, name='mu_1')
-            
-            mu = tf.layers.batch_normalization(inputs=mu, name='mu_bn2', training=self.is_training)
-            mu = tf.layers.dense(mu, 1, activation=None, name='mu')
-            
-            sigma = tf.layers.batch_normalization(inputs=intention_feature, name='sigma_bn1', training=self.is_training)
-            sigma = tf.layers.dense(sigma, EMBEDDING_DIM*2, activation=tf.nn.relu, name='sigma_1')
-            
-            sigma = tf.layers.batch_normalization(inputs=sigma, name='sigma_bn2', training=self.is_training)
-            sigma = tf.layers.dense(sigma, 1, activation=None, name='sigma')
-            sigma = tf.nn.softplus(sigma)
-            
-            intention = tf.compat.v1.distributions.Normal(mu, sigma)
-            intention = intention.sample([1])
-            intention = tf.squeeze(intention, axis=[0])
+            intention = get_intention(intention_feature)
             
         with tf.name_scope('Interaction_layer'):
             cross_inp = tf.concat([intent_vec, self.item_eb, intent_vec - self.item_eb, tf.multiply(intent_vec, self.item_eb)], 1)
@@ -195,3 +181,16 @@ class DUIN(Model):
         mask = tf.tile(tf.expand_dims(mask, 0), [tf.shape(inputs)[0], 1, tf.shape(inputs)[2]])
         outputs = tf.where(mask, inputs, tf.zeros(shape=tf.shape(inputs)))
         return outputs
+    
+    def RelevantGate(self, input, hidden_dim, gama=1 ,tag=None):
+        with tf.variable_scope(name_or_scope="{}_RelevantGate_Network".format(tag), reuse=tf.AUTO_REUSE):
+            dnn1 = layers.fully_connected(input,
+                                            hidden_dim,
+                                            activation_fn=tf.nn.relu,
+                                            scope=tag + "RelevantGate_FC1_{}".format(tag))
+        
+            output = gama * layers.fully_connected(dnn1,
+                                            1,
+                                            activation_fn= tf.nn.sigmoid,
+                                            scope=tag + "RelevantGate_FC2_{}".format(tag))
+        return output
